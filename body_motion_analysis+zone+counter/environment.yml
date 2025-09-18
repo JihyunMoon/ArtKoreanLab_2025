@@ -5,7 +5,7 @@ dependencies:
   - python>=3.10,<3.13
   - numpy>=1.23
   - opencv>=4.8
-  - python-osc>=1.8
   - pip
   - pip:
     - ultralytics>=8.0.0
+    - python-osc>=1.8
