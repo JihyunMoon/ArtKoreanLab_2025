@@ -4,7 +4,7 @@
 module.exports = {
     loop: {
         // Run forever when true; otherwise runs loopCount times
-        continuous: true,
+        continuous: false,
         loopCount: 3,
         loopDelayMs: 2000
     },

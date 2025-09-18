@@ -1,21 +1,9 @@
 // Minimal, clean entry re-exporting the modular implementation
-module.exports = require('./src/index');
+const allIndexExports = require('./src/index');
+const { switchableAnalyzer } = require('./src/analyzers');
+const { pickRandomImdbMovieIdFromWeb, pickRandomRtMovieUrlFromWeb } = require('./src/scrapers');
 
-// Optional: preserve direct-run demo hooks without bundling the entire logic here
-if (require.main === module) {
-  (async () => {
-    const api = require('./src/index');
-    console.log('Starting Sentiment Analysis Examples...\n');
-    try {
-      await api.analyzeLocalFiles();
-      await api.analyzeWebReviews();
-      await api.manualSentimentTest();
-    } catch (e) {
-      // Demo failures are non-fatal
-    }
-    console.log('\n=== All Examples Complete ===');
-  })();
-}
+function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
 /**
  * Custom loop analyzer that can re-run analyses multiple times, optionally randomizing online movie selection.
@@ -122,6 +110,40 @@ async function customLoopAnalyzer(options = {}) {
       showProgress,
       onlineSources
     });
+
+    // Display individual results for this iteration
+    if (iterResult.local && iterResult.local.length > 0) {
+      console.log(`\n📊 Local Analysis Results (Iteration ${iteration}):`);
+      iterResult.local.forEach((result, idx) => {
+        const emoji = result.sentimentCategory === 'Positive' ? '😊' : 
+                     result.sentimentCategory === 'Negative' ? '😞' : 
+                     result.sentimentCategory === 'Error' ? '❌' : '😐';
+        console.log(`  ${emoji} ${result.filename || result.index}: Score ${result.sentimentScore.toFixed(3)} (${result.sentimentCategory})`);
+        console.log(`     "${result.text.substring(0, 80)}..."`);
+      });
+    }
+
+    if (iterResult.online.imdb && iterResult.online.imdb.length > 0) {
+      console.log(`\n🎬 IMDB Results (${chosenMovieId}):`); 
+      iterResult.online.imdb.forEach((result, idx) => {
+        const emoji = result.sentimentCategory === 'Positive' ? '😊' : 
+                     result.sentimentCategory === 'Negative' ? '😞' : 
+                     result.sentimentCategory === 'Error' ? '❌' : '😐';
+        console.log(`  ${emoji} Review ${result.index}: Score ${result.sentimentScore.toFixed(3)} (${result.sentimentCategory})`);
+        console.log(`     "${result.text.substring(0, 80)}..."`);
+      });
+    }
+
+    if (iterResult.online.rottentomatoes && iterResult.online.rottentomatoes.length > 0) {
+      console.log(`\n🍅 Rotten Tomatoes Results:`);
+      iterResult.online.rottentomatoes.forEach((result, idx) => {
+        const emoji = result.sentimentCategory === 'Positive' ? '😊' : 
+                     result.sentimentCategory === 'Negative' ? '😞' : 
+                     result.sentimentCategory === 'Error' ? '❌' : '😐';
+        console.log(`  ${emoji} Review ${result.index}: Score ${result.sentimentScore.toFixed(3)} (${result.sentimentCategory})`);
+        console.log(`     "${result.text.substring(0, 80)}..."`);
+      });
+    }
 
     runs.push({
       iteration,
@@ -279,9 +301,9 @@ async function main() {
   console.log('Starting Sentiment Analysis Examples...\n');
 
   // Run all examples
-  await analyzeLocalFiles();
-  await analyzeWebReviews();
-  await manualSentimentTest();
+  await allIndexExports.analyzeLocalFiles();
+  await allIndexExports.analyzeWebReviews();
+  await allIndexExports.manualSentimentTest();
 
   console.log('\n=== All Examples Complete ===');
   console.log('Note: Web scraping examples may fail due to website protections.');
@@ -290,21 +312,9 @@ async function main() {
 
 // Export functions for use in other modules
 module.exports = {
-  getSentiment,
-  getSentimentChat,
-  getSentimentScore,
-  loadLocalTextFiles,
-  analyzeBatchSentiment,
-  analyzeIndividualReviews,
-  switchableAnalyzer,
+  ...allIndexExports, // Re-export everything from src/index.js
   customLoopAnalyzer,
   analysisPresets,
-  scrapeRottenTomatoesReviews,
-  scrapeIMDBReviews,
-  scrapeWebContent,
-  analyzeLocalFiles,
-  analyzeWebReviews,
-  manualSentimentTest,
   main
 };
 
