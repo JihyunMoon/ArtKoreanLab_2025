@@ -340,6 +340,19 @@ def main():
                             "/zone/amount", [z.name, int(counts_per_zone.get(z.name, 0))])
                     except Exception:
                         pass
+                # aggregated JSON payload with all zones and counts
+                try:
+                    payload = {
+                        "count_total": int(len(detections)),
+                        "avg_motion_rate": float(avg_motion),
+                        "zones": [
+                            {"name": z.name, "count": int(counts_per_zone.get(z.name, 0))}
+                            for z in zones
+                        ],
+                    }
+                    osc_client.send_message("/zones", json.dumps(payload))
+                except Exception:
+                    pass
 
             # (duplicate OSC send block removed)
 

@@ -1,6 +1,7 @@
 # People Motion + Zone Counter
 
 An interactive OpenCV tool to:
+-
 - Detect people in video/webcam
 - Draw and save polygon zones
 - Count how many people are in each zone per frame
@@ -8,6 +9,7 @@ An interactive OpenCV tool to:
  - Optional YOLO detector for better accuracy/speed
 
 ## Features
+
 - Click to add polygon points; press `n` to start a new zone; `z` to undo last point.
 - Save/load zones as JSON with `s`/`l`.
 - People detection using OpenCV HOG (no DNN required).
@@ -85,6 +87,22 @@ Example messages:
 ```text
 /zone/amount "Zone 1" 3
 /avg_motion_rate 0.75
+```
+
+Aggregated OSC message (all zones)
+
+- Address: `/zones`
+- Arguments: `[payload: string]` where payload is JSON:
+
+```json
+{
+  "count_total": 5,
+  "avg_motion_rate": 12.3,
+  "zones": [
+    {"name": "Zone 1", "count": 3},
+    {"name": "Zone 2", "count": 2}
+  ]
+}
 ```
 
 ## Keys
