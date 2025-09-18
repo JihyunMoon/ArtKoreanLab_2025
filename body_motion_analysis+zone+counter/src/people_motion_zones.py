@@ -169,6 +169,11 @@ def overlay_info(frame, detections, avg_motion, zones: List[Zone], counts_per_zo
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
         cv2.putText(frame, f"{conf:.2f}", (x, y-5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+        # Draw centroid and its coordinates
+        cx, cy = centroid_of_bbox(x, y, w, h)
+        cv2.circle(frame, (cx, cy), 3, (255, 0, 0), -1)
+        cv2.putText(frame, f"({cx},{cy})", (cx + 5, cy - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
     # Draw zones and counts
     draw_zones(frame, zones)
     for i, z in enumerate(zones):
@@ -351,6 +356,7 @@ def main():
                         ],
                     }
                     osc_client.send_message("/zones", json.dumps(payload))
+                    print(f"OSC /zones", payload)
                 except Exception:
                     pass
 
