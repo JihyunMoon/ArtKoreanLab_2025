@@ -1,160 +1,111 @@
-# Enhanced Sentiment Analysis with Node.js and OpenAI
+# Sentiment Analysis: IMDB Reviews + Gemini + ComfyUI
 
-This project provides a comprehensive Node.js implementation for sentiment analysis using OpenAI's API, with support for local file processing and web scraping capabilities. The codebase is modularized under `src/`, and the top-level `sentiment.js` re-exports the public API for simplicity.
+Analyze random IMDB user reviews with Google AI (Gemini), extract sentiment and keywords, and optionally generate a cinematic image with ComfyUI — all saved into `outputs/`.
 
 ## Features
 
-- Multiple Sentiment Analysis Methods
-  - Legacy Completions API (similar to the original Python code)
-  - Modern Chat Completions API (recommended)
-  - Numerical sentiment scoring (-1 to 1 scale)
-- Data Loading Capabilities
-  - Local file processing from `unsup_test_data` folder
-  - Web scraping for IMDB and Rotten Tomatoes reviews
-  - Generic web content extraction
-- Batch Processing
-  - Analyze multiple texts with aggregated results
-  - Configurable batch size and filtering options
-- Enhanced Features
-  - Error handling and logging
-  - Modular design for easy integration
-  - Rate limiting to avoid API quotas
-  - Text preprocessing and cleaning
-  - Config-driven continuous runs and randomized online sources
+- Fetches titles and a few user reviews from IMDB for random/popular movies
+- Uses Gemini (`@google/generative-ai`) to return:
+  - `sentimentScore` in [-1, 1], `sentimentCategory` (negative/neutral/positive)
+  - `keywords` (3–7 concise tokens)
+  - Built-in keyword/sentiment fallbacks if the API is unavailable
+- Optional image generation via ComfyUI with a configurable workflow (`default.json`)
+- Saves JSON metadata under `outputs/data/` and images to `outputs/images/`
 
-## Setup
+## Prerequisites
 
-1. Install dependencies
+- Node.js 18+ recommended
+- A Google AI API key (for Gemini): set one of `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- (Optional) A running ComfyUI server for image generation
 
-   ```bash
-   npm install
-   ```
+## Install
 
-2. Set up environment variables
+```bash
+# from repo root
+cd sentiment-analysis
+npm install
+```
 
-   ```bash
-   cp .env.example .env
-   ```
+## Configuration
 
-   Then edit `.env` and add your OpenAI API key:
+Copy the example and edit as needed:
 
-   ```env
-   OPENAI_API_KEY=your_actual_api_key_here
-   ```
+```bash
+cp .env.example .env
+```
+Key variables from `.env.example`:
 
-3. Get an OpenAI API key
+- `AI_PROVIDER` (default `gemini`)
+- `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- `GEMINI_MODEL` (default `gemini-2.0-flash`)
+- Image generation via ComfyUI:
+  - `IMAGE_PROVIDER=comfyui`
+  - `COMFYUI_BASE_URL` (default `http://127.0.0.1:8188`)
+  - `COMFYUI_WORKFLOW_FILE` (defaults to repo `default.json` if omitted)
+  - Optional overrides: `COMFYUI_CKPT`, `COMFYUI_WIDTH`, `COMFYUI_HEIGHT`, `COMFYUI_STEPS`, `COMFYUI_CFG`, `COMFYUI_SAMPLER`, `COMFYUI_SCHEDULER`, `COMFYUI_NEGATIVE`, `COMFYUI_TIMEOUT`
 
-  Visit [OpenAI API Keys](https://platform.openai.com/api-keys) to create a new API key, then add it to your `.env` file.
+Notes:
+
+- If image generation is not desired, leave `IMAGE_PROVIDER` empty or unset. The app will skip image creation gracefully.
+- The ComfyUI workflow is expected to contain nodes like `KSampler`, `CheckpointLoaderSimple`, `EmptyLatentImage`, `CLIPTextEncode`, and `SaveImage`. The code injects your prompt, sizes, and other overrides.
 
 ## Usage
 
-### Run the basic example
+The primary entry is `random-movie-analyzer.js`. Available npm scripts:
 
 ```bash
+# Quick test: analyze a couple of popular movies (default)
 npm start
 # or
-node sentiment.js
+npm run random
+
+# Full run: more movies, mixed random/popular
+npm run random:full
+
+# Stream mode: continuous loop (Ctrl+C to stop)
+# Usage: npm run random:stream -- <delayMs> <reviewsPerMovie>
+# Example: every 3 seconds, 1 review per movie
+npm run random:stream -- 3000 1
 ```
 
-### Run with config (looping, random online sources)
+Direct Node usage is also supported:
 
 ```bash
-npm run run:config
+# quick mode (default if no args)
+node random-movie-analyzer.js quick
+
+# full mode with optional overrides
+node random-movie-analyzer.js full 8 2  
+#            ^mode            ^movieCount ^reviewsPerMovie
+
+# stream mode: delayMs and optional reviewsPerMovie
+node random-movie-analyzer.js stream 3000 1
 ```
 
-Edit `config.js` to control:
+## Output
 
-- `loop.continuous` (true for infinite runs) and `loop.loopCount` for finite iterations
-- `analysis.mode`: `local` | `online` | `both` | `auto`
-- `analysis.onlineSources`: `['imdb', 'rt']` to choose sources
-- `randomization.randomizeOnline`: enable random movie selection each run
-- `randomSources`: tune IMDB/RottenTomatoes list pages used for random picking
+Generated files go to:
 
-### Use as a module
+- `outputs/data/*.json` — per-movie or per-review metadata
+- `outputs/images/*.png` — when ComfyUI is enabled and an image is produced
 
-```javascript
-const { getSentiment, getSentimentChat, customLoopAnalyzer } = require('./sentiment');
+Each JSON entry includes movie metadata, extracted sentiment and keywords, and the file path of any generated image.
 
-async function analyzeSentiment() {
-  const text = 'I love this new feature!';
+## How it works
 
-  // Using legacy completions API
-  const sentiment1 = await getSentiment(text);
-  console.log('Sentiment:', sentiment1);
+- `src/random-imdb-generator.js` — finds random IMDB titles (or uses a curated popular list)
+- `src/imdb-scraper.js` — scrapes the movie page and a handful of user reviews
+- `src/ai-provider.js` — selects the AI provider (currently Gemini)
+- `src/gemini-utils.js` — calls Gemini for structured analysis; has fallbacks for sentiment/keywords
+- `default.json` — a minimal ComfyUI workflow template that the app customizes per run
 
-  // Using chat completions API (recommended)
-  const sentiment2 = await getSentimentChat(text);
-  console.log('Sentiment:', sentiment2);
-}
+## Troubleshooting
 
-analyzeSentiment();
-```
-
-### Project Structure
-
-```text
-sentiment.js           # Re-exports from src for convenience
-src/
-  index.js            # Public API aggregation
-  openaiClient.js     # OpenAI client with dotenv
-  sentimentCore.js    # Core sentiment functions
-  loaders.js          # Local dataset loaders/cleaners
-  scrapers.js         # IMDB/RT scrapers + random pickers
-  analyzers.js        # Batch, switchable, and custom loop analyzers
-config.js              # Config for looping and randomization
-run-with-config.js     # Runner that uses config.js
-custom-loop-demo.js    # Demo script for custom loop analyzer
-```
-
-## Python Version
-
-### Original Python Code
-
-```python
-def get_sentiment(text):
-    response = openai.Completion.create(
-        engine="gpt-3.5-turbo-instruct",
-        prompt=f"Sentiment analysis of the following text:\n{text}\n",
-        temperature=0.5,
-        max_tokens=1,
-        top_p=1,
-        frequency_penalty=0,
-        presence_penalty=0,
-        stop=["\n"]
-    )
-    sentiment = response.choices[0].text.strip()
-    return sentiment
-```
-
-### Node.js Equivalent
-
-```javascript
-async function getSentiment(text) {
-  const response = await openai.completions.create({
-    model: 'gpt-3.5-turbo-instruct',
-    prompt: `Sentiment analysis of the following text:\n${text}\n`,
-    temperature: 0.5,
-    max_tokens: 1,
-    top_p: 1,
-    frequency_penalty: 0,
-    presence_penalty: 0,
-    stop: ['\n']
-  });
-  return response.choices[0].text.trim();
-}
-```
-
-## Key Changes
-
-1. Model Update: `text-davinci-002` is deprecated; using `gpt-3.5-turbo-instruct` instead
-2. Async/Await: JavaScript uses promises and async/await pattern
-3. Error Handling: Added try-catch blocks for better error management
-4. Modern Alternative: Included `getSentimentChat()` using the newer Chat Completions API
-
-## Dependencies
-
-- `openai`: Official OpenAI Node.js library
-- `dotenv`: Environment variable management
+- Missing API key: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` in `.env`
+- Network / IMDB scraping changes: retry later or adjust selectors in `src/imdb-scraper.js`
+- ComfyUI timeouts: increase `COMFYUI_TIMEOUT` and ensure the server is reachable at `COMFYUI_BASE_URL`
+- No images generated: confirm `IMAGE_PROVIDER=comfyui` and that `COMFYUI_WORKFLOW_FILE` points to a valid workflow; check ComfyUI server logs
+- Rate limits / model errors: the code applies light fallbacks, but you may need to slow requests or handle keys with sufficient quota
 
 ## License
 
