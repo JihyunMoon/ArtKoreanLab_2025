@@ -6,13 +6,19 @@
   "scripts": {
     "start": "node sentiment.js",
     "run:config": "node run-with-config.js",
+    "random": "node random-movie-analyzer.js quick",
+    "random:full": "node random-movie-analyzer.js full",
+    "random:custom": "node random-movie-analyzer.js custom",
+  "random:stream": "node random-movie-analyzer.js stream 3000 1",
+    "imdb:test": "node random-imdb-generator.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "openai": "^4.0.0",
-    "dotenv": "^16.3.1",
     "axios": "^1.6.0",
-    "cheerio": "^1.0.0-rc.12"
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.3.1",
+    "node-osc": "^11.0.0",
+    "openai": "^4.0.0"
   },
   "keywords": [
     "sentiment-analysis",

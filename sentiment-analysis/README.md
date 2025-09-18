@@ -1,26 +1,13 @@
-# Enhanced Sentiment Analysis with Node.js and OpenAI
+# Movie Review Sentiment Streaming with Node.js and OSC
 
-This project provides a comprehensive Node.js implementation for sentiment analysis using OpenAI's API, with support for local file processing and web scraping capabilities. The codebase is modularized under `src/`, and the top-level `sentiment.js` re-exports the public API for simplicity.
+This project provides a Node.js application that continuously streams movie reviews, performs sentiment analysis using OpenAI's API, and sends the results via OSC (Open Sound Control) for real-time audio/visual applications.
 
 ## Features
 
-- Multiple Sentiment Analysis Methods
-  - Legacy Completions API (similar to the original Python code)
-  - Modern Chat Completions API (recommended)
-  - Numerical sentiment scoring (-1 to 1 scale)
-- Data Loading Capabilities
-  - Local file processing from `unsup_test_data` folder
-  - Web scraping for IMDB and Rotten Tomatoes reviews
-  - Generic web content extraction
-- Batch Processing
-  - Analyze multiple texts with aggregated results
-  - Configurable batch size and filtering options
-- Enhanced Features
-  - Error handling and logging
-  - Modular design for easy integration
-  - Rate limiting to avoid API quotas
-  - Text preprocessing and cleaning
-  - Config-driven continuous runs and randomized online sources
+- **Continuous Movie Review Streaming**: Automatically fetches random movie data and reviews
+- **Real-time Sentiment Analysis**: Uses OpenAI's API to analyze review sentiment (-1 to 1 scale)
+- **OSC Integration**: Sends sentiment data via OSC to localhost:57120 for SuperCollider, Max/MSP, etc.
+- **Configurable Parameters**: Adjustable delay between reviews, review count limits, and reviews per movie
 
 ## Setup
 
@@ -48,113 +35,92 @@ This project provides a comprehensive Node.js implementation for sentiment analy
 
 ## Usage
 
-### Run the basic example
+### Start the Movie Review Stream
 
 ```bash
-npm start
-# or
-node sentiment.js
+# Start streaming with default settings (3-second delays, unlimited reviews)
+node random-movie-analyzer.js
+
+# Custom settings - 5-second delays, max 10 reviews, 2 reviews per movie
+node random-movie-analyzer.js --delay 5000 --max 10 --reviews 2
 ```
 
-### Run with config (looping, random online sources)
+### Test OSC Functionality
 
 ```bash
-npm run run:config
+# Test OSC sending only
+node test-osc.js osc
+
+# Test stream mode (5 reviews)
+node test-osc.js stream
+
+# Run all tests
+node test-osc.js all
 ```
 
-Edit `config.js` to control:
+### OSC Data Format
 
-- `loop.continuous` (true for infinite runs) and `loop.loopCount` for finite iterations
-- `analysis.mode`: `local` | `online` | `both` | `auto`
-- `analysis.onlineSources`: `['imdb', 'rt']` to choose sources
-- `randomization.randomizeOnline`: enable random movie selection each run
-- `randomSources`: tune IMDB/RottenTomatoes list pages used for random picking
+The application sends three OSC messages for each review:
 
-### Use as a module
+- `/movie/title` - Movie title (string)
+- `/movie/review` - Review text content (string)  
+- `/movie/sentiment` - Sentiment score from -1 to 1 (float)
 
-```javascript
-const { getSentiment, getSentimentChat, customLoopAnalyzer } = require('./sentiment');
+### SuperCollider Integration Example
 
-async function analyzeSentiment() {
-  const text = 'I love this new feature!';
+```supercollider
+// Receive movie review data in SuperCollider
+OSCdef(\movieTitle, {|msg| 
+    ("Movie: " ++ msg[1]).postln;
+}, "/movie/title");
 
-  // Using legacy completions API
-  const sentiment1 = await getSentiment(text);
-  console.log('Sentiment:', sentiment1);
+OSCdef(\movieReview, {|msg| 
+    ("Review: " ++ msg[1]).postln;
+}, "/movie/review");
 
-  // Using chat completions API (recommended)
-  const sentiment2 = await getSentimentChat(text);
-  console.log('Sentiment:', sentiment2);
-}
-
-analyzeSentiment();
+OSCdef(\movieSentiment, {|msg| 
+    ("Sentiment: " ++ msg[1]).postln;
+    // Use sentiment value to control audio parameters
+    ~synth.set(\freq, msg[1].linexp(-1, 1, 200, 800));
+}, "/movie/sentiment");
 ```
 
-### Project Structure
+## Command Line Options
+
+- `--delay <ms>` - Milliseconds between reviews (default: 3000)
+- `--max <number>` - Maximum number of reviews to process (default: unlimited)
+- `--reviews <number>` - Number of reviews per movie (default: 1)
+
+## Project Structure
 
 ```text
-sentiment.js           # Re-exports from src for convenience
+random-movie-analyzer.js   # Main streaming application
+test-osc.js               # OSC testing utilities
 src/
-  index.js            # Public API aggregation
-  openaiClient.js     # OpenAI client with dotenv
-  sentimentCore.js    # Core sentiment functions
-  loaders.js          # Local dataset loaders/cleaners
-  scrapers.js         # IMDB/RT scrapers + random pickers
-  analyzers.js        # Batch, switchable, and custom loop analyzers
-config.js              # Config for looping and randomization
-run-with-config.js     # Runner that uses config.js
-custom-loop-demo.js    # Demo script for custom loop analyzer
+  oscSender.js           # OSC client wrapper
+  openaiClient.js        # OpenAI API client
+  sentimentCore.js       # Sentiment analysis functions
+  scrapers.js            # IMDB scraping utilities
+  analyzers.js           # Review analysis logic
+  loaders.js             # Data loading utilities
+config.js                 # Configuration settings
 ```
-
-## Python Version
-
-### Original Python Code
-
-```python
-def get_sentiment(text):
-    response = openai.Completion.create(
-        engine="gpt-3.5-turbo-instruct",
-        prompt=f"Sentiment analysis of the following text:\n{text}\n",
-        temperature=0.5,
-        max_tokens=1,
-        top_p=1,
-        frequency_penalty=0,
-        presence_penalty=0,
-        stop=["\n"]
-    )
-    sentiment = response.choices[0].text.strip()
-    return sentiment
-```
-
-### Node.js Equivalent
-
-```javascript
-async function getSentiment(text) {
-  const response = await openai.completions.create({
-    model: 'gpt-3.5-turbo-instruct',
-    prompt: `Sentiment analysis of the following text:\n${text}\n`,
-    temperature: 0.5,
-    max_tokens: 1,
-    top_p: 1,
-    frequency_penalty: 0,
-    presence_penalty: 0,
-    stop: ['\n']
-  });
-  return response.choices[0].text.trim();
-}
-```
-
-## Key Changes
-
-1. Model Update: `text-davinci-002` is deprecated; using `gpt-3.5-turbo-instruct` instead
-2. Async/Await: JavaScript uses promises and async/await pattern
-3. Error Handling: Added try-catch blocks for better error management
-4. Modern Alternative: Included `getSentimentChat()` using the newer Chat Completions API
 
 ## Dependencies
 
+- `node-osc`: OSC (Open Sound Control) messaging
 - `openai`: Official OpenAI Node.js library
+- `axios`: HTTP client for web scraping
+- `cheerio`: Server-side HTML parsing
 - `dotenv`: Environment variable management
+
+## Use Cases
+
+- Real-time audio-visual installations responding to movie sentiment
+- Live coding performances with sentiment-driven parameters
+- Interactive media art projects
+- Data sonification experiments
+- Educational demonstrations of sentiment analysis
 
 ## License
 
