@@ -1,0 +1,328 @@
+/**
+ * Realtime Mood-Machine Pipeline (single file)
+ * - Local .txt reviews (./unsup_test_data) OR online reviews (IMDB/RT)
+ * - TF-IDF keyword extraction
+ * - Sentiment score (-1..1) → Mood bucket
+ * - Build dual prompts (Left/Right wall) → POST to ComfyUI
+ * - WebSocket for audience text stream (weights the mood/keywords)
+ * - One-line poem generation → broadcast to clients
+ *
+ * Env:
+ *   OPENAI_API_KEY=...
+ *   COMFY_URL=http://127.0.0.1:8188/prompt
+ *   DATA_MODE=local | online | both
+ *   LOOP_SECONDS=5
+ */
+
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const axios = require('axios');
+
+const { getSentimentScore, analyzeBatchSentiment } = require('./sentimentCore');         // -1..1 sentiment :contentReference[oaicite:5]{index=5}
+const { loadLocalTextFiles } = require('./loaders');                                     // ./unsup_test_data/*.txt loader :contentReference[oaicite:6]{index=6}
+const { scrapeIMDBReviews, scrapeRottenTomatoesReviews } = require('./scrapers');        // IMDB/RT scraping utils :contentReference[oaicite:7]{index=7}
+const {
+  analyzeBatchSentiment: analyzeBatchSentimentFromAnalyzers,
+  switchableAnalyzer,
+  customLoopAnalyzer,
+} = require('./analyzers');                                                               // batch/loop analyzers(재사용 가능) :contentReference[oaicite:8]{index=8}
+
+/* ------------------------------------
+   Config
+------------------------------------ */
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
+const COMFY_URL = process.env.COMFY_URL || 'http://127.0.0.1:8188/prompt';
+const DATA_MODE = (process.env.DATA_MODE || 'local').toLowerCase(); // local | online | both
+const LOOP_SECONDS = process.env.LOOP_SECONDS ? Number(process.env.LOOP_SECONDS) : 5;
+
+/* ------------------------------------
+   Server (REST + WebSocket)
+------------------------------------ */
+const app = express();
+app.use(express.json());
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+/* ------------------------------------
+   Global (shared) state
+------------------------------------ */
+const STATE = {
+  audienceText: '',      // latest audience message
+  audienceScore: 0,      // cached sentiment score (-1..1)
+  last: {
+    title: '',
+    review: '',
+    keywords: [],
+    mood: '',
+    poem: '',
+    leftPrompt: '',
+    rightPrompt: ''
+  }
+};
+
+/* ------------------------------------
+   TF-IDF keyword extraction (simple)
+------------------------------------ */
+const natural = require('natural');
+const TfIdf = natural.TfIdf;
+const tfidf = new TfIdf();
+
+// Build/update TF-IDF on the fly per batch
+function extractKeywordsFromCorpus(texts, topK = 8) {
+  const localTfidf = new TfIdf();
+  texts.forEach(t => localTfidf.addDocument(t));
+  const terms = {};
+  texts.forEach((t, i) => {
+    localTfidf.listTerms(i).slice(0, 50).forEach(item => {
+      if (!/^\d+$/.test(item.term) && item.term.length >= 2 && item.term.length <= 30) {
+        terms[item.term] = (terms[item.term] || 0) + item.tfidf;
+      }
+    });
+  });
+  const sorted = Object.entries(terms).sort((a, b) => b[1] - a[1]);
+  return sorted.slice(0, topK).map(([term]) => term);
+}
+
+/* ------------------------------------
+   Mood mapping
+------------------------------------ */
+function mapSentimentToMood(text, score) {
+  const t = (text || '').toLowerCase();
+  if (/\b(mystery|mysterious|surreal|enigmatic|dream|fog)\b/.test(t)) return 'Mysterious';
+  if (/\b(chaos|chaotic|fragment|velocity)\b/.test(t)) return 'Chaotic';
+  if (/\b(romance|love|passion|tender|intimate)\b/.test(t)) return 'Romantic';
+  if (/\b(myth|legend|cosmic|epic)\b/.test(t)) return 'Mythic';
+
+  if (score >= 0.55) return 'Euphoric';
+  if (score >= 0.15) return 'Hopeful';
+  if (score <= -0.55) return 'Dark';
+  if (score <= -0.15) return 'Melancholic';
+  return Math.random() < 0.5 ? 'Serene' : 'Melancholic';
+}
+
+function moodStylePack(mood) {
+  const table = {
+    Euphoric:   { palette: ['warm gold','pink'],         lighting: ['high-key glow'],    tone: ['celebration','vitality'] },
+    Hopeful:    { palette: ['pastel yellow','sky blue'], lighting: ['dawn light'],       tone: ['renewal','optimism'] },
+    Melancholic:{ palette: ['dusky violet','blue'],      lighting: ['twilight'],         tone: ['nostalgia','longing'] },
+    Dark:       { palette: ['deep black','crimson'],     lighting: ['chiaroscuro'],      tone: ['ominous','tension'] },
+    Mysterious: { palette: ['teal','amethyst'],          lighting: ['ethereal mist'],    tone: ['enigmatic','surreal'] },
+    Chaotic:    { palette: ['neon','strobe red'],        lighting: ['flash'],            tone: ['fragmented','kinetic'] },
+    Romantic:   { palette: ['deep red','rose'],          lighting: ['candlelight'],      tone: ['intimacy','tenderness'] },
+    Serene:     { palette: ['white','pale blue'],        lighting: ['natural diffuse'],  tone: ['stillness','harmony'] },
+    Mythic:     { palette: ['celestial gold','emerald'], lighting: ['halo glow'],        tone: ['legend','transcendence'] },
+  };
+  return table[mood] || table.Serene;
+}
+
+/* ------------------------------------
+   Prompt builders (Left/Right walls)
+------------------------------------ */
+function buildDualPrompts(title, keywords, mood, quote) {
+  const pack = moodStylePack(mood);
+  const kw = (keywords || []).slice(0, 8).join(', ');
+  const tone = pack.tone.join(', ');
+  const palette = pack.palette.join(', ');
+  const lighting = pack.lighting.join(', ');
+  const safeQuote = (quote || '').replace(/\s+/g, ' ').trim();
+
+  const left = `"${title}" cinematic interpretation, ${kw}, mood: ${mood} (${tone}), palette: ${palette}, lighting: ${lighting}, ` +
+               `photorealistic, professional photography, cinematic composition, depth of field, film grain texture, intimate perspective, masterpiece quality, 8k, ` +
+               `reviewer inspiration: "${safeQuote}"`;
+
+  const right = `"${title}" cinematic interpretation, ${kw}, mood: ${mood} (${tone}), palette: ${palette}, lighting: ${lighting}, ` +
+                `graphic novel aesthetic, bold line art, stylized illustration, dramatic visual storytelling, poster design, high contrast, strong line work, ` +
+                `reviewer inspiration: "${safeQuote}"`;
+  return { left, right };
+}
+
+function poemOneLiner(title, mood, keywords, audienceText) {
+  const focus = (keywords && keywords.length) ? keywords.slice(0,3).join(', ') : '기억과 빛';
+  const you = (audienceText || '').trim().replace(/\s+/g, ' ');
+  return you
+    ? `이 ${mood}의 밤, "${you}"라는 말이 ${title}의 숨은 장면을 깨운다.`
+    : `${mood}의 기류 속에서, ${title}는 ${focus}로 다시 숨을 쉰다.`;
+}
+
+/* ------------------------------------
+   ComfyUI POST
+------------------------------------ */
+async function postToComfy(promptText, mood, side) {
+  // simple sampler mapping
+  let sampler = 'euler_a', steps = 26, cfg = 7.5, denoise = 0.5;
+  if (['Dark','Chaotic'].includes(mood)) { sampler='dpmpp_2m_karras'; steps=24; cfg=6.0; denoise=0.45; }
+  if (['Euphoric','Mythic','Romantic'].includes(mood)) { sampler='dpmpp_sde_karras'; steps=30; cfg=9.0; denoise=0.35; }
+
+  const payload = {
+    prompt: {
+      "0": { class_type: "CLIPTextEncode", inputs: { text: promptText } },
+      "1": { class_type: "KSampler", inputs: { seed: Math.floor(Math.random()*1e7), steps, cfg, sampler_name: sampler, denoise } }
+      // 실제 Comfy 워크플로에서는 모델/VAEDecode 노드 연결 필요
+    }
+  };
+  try {
+    await axios.post(COMFY_URL, payload, { timeout: 10000 });
+  } catch (e) {
+    console.error(`[ComfyUI:${side}]`, e.message);
+  }
+}
+
+/* ------------------------------------
+   Utilities
+------------------------------------ */
+function pickSentenceForQuote(review) {
+  if (!review) return '';
+  const candidates = String(review).split(/(?<=[.!?])\s+/).filter(s => s.split(/\s+/).length >= 6 && s.split(/\s+/).length <= 16);
+  return candidates.length ? candidates[Math.floor(Math.random()*candidates.length)] : String(review).slice(0, 140);
+}
+
+/* ------------------------------------
+   Data fetchers
+------------------------------------ */
+async function getLocalBatch(limit = 10) {
+  // returns [{ filename, text, source }, ...]
+  const arr = await loadLocalTextFiles({ limit, offset: 0 });
+  return arr.map(x => ({ title: x.filename.replace(/\.txt$/,''), review: x.text }));
+}
+
+async function getOnlineBatch(limit = 10) {
+  // Pick a fixed movie for demo; swap to random pool if needed
+  const imdbId = 'tt0111161'; // Shawshank (예시)
+  const rtUrl = 'https://www.rottentomatoes.com/m/the_shawshank_redemption';
+  let items = [];
+  try {
+    const imdb = await scrapeIMDBReviews(imdbId, { limit: Math.ceil(limit/2) });
+    items = items.concat(imdb.map(r => ({ title: 'IMDB Review', review: r.text })));
+  } catch(_) {}
+  try {
+    const rt = await scrapeRottenTomatoesReviews(rtUrl, { limit: Math.floor(limit/2) });
+    items = items.concat(rt.map(r => ({ title: 'RT Review', review: r.text })));
+  } catch(_) {}
+  return items;
+}
+
+/* ------------------------------------
+   Core loop (every LOOP_SECONDS)
+------------------------------------ */
+async function oneCycle() {
+  try {
+    // 1) Fetch data (local/online)
+    let batch = [];
+    if (DATA_MODE === 'local') {
+      batch = await getLocalBatch(12);
+    } else if (DATA_MODE === 'online') {
+      batch = await getOnlineBatch(12);
+    } else { // both
+      const a = await getLocalBatch(6);
+      const b = await getOnlineBatch(6);
+      batch = a.concat(b);
+    }
+    if (!batch.length) return;
+
+    // 2) Choose one "movie/session" (here we treat one review as a movie slot)
+    const chosen = batch[Math.floor(Math.random()*batch.length)];
+    const title = chosen.title || 'Untitled';
+    const review = chosen.review || '';
+
+    // 3) Sentiments (review & audience)
+    const scoreReview = await getSentimentScore(review);     // -1..1 (OpenAI) :contentReference[oaicite:9]{index=9}
+    const scoreAudience = STATE.audienceText
+      ? await getSentimentScore(STATE.audienceText)
+      : 0;
+
+    // 4) Fuse (audience-forward)
+    const fusedScore = STATE.audienceText ? (0.7*scoreAudience + 0.3*scoreReview) : scoreReview;
+
+    // 5) Keywords (TF-IDF over mini-corpus: [review, audience])
+    const kws = extractKeywordsFromCorpus(
+      [review].concat(STATE.audienceText ? [STATE.audienceText] : []),
+      8
+    );
+
+    // 6) Mood
+    const mood = mapSentimentToMood(
+      `${review}\n${STATE.audienceText || ''}`,
+      fusedScore
+    );
+
+    // 7) Prompts (Left/Right)
+    const quote = pickSentenceForQuote(review);
+    const { left, right } = buildDualPrompts(title, kws, mood, quote);
+
+    // 8) Send to ComfyUI
+    await Promise.all([
+      postToComfy(left,  mood, 'LEFT'),
+      postToComfy(right, mood, 'RIGHT')
+    ]);
+
+    // 9) Poem
+    const poem = poemOneLiner(title, mood, kws, STATE.audienceText);
+
+    // 10) Update state & broadcast
+    STATE.last = { title, review, keywords: kws, mood, poem, leftPrompt: left, rightPrompt: right };
+    broadcast({ type: 'cycle', data: STATE.last });
+  } catch (e) {
+    console.error('[cycle]', e.message);
+  }
+}
+
+let loopTimer = null;
+function startLoop() {
+  if (loopTimer) return;
+  loopTimer = setInterval(oneCycle, Math.max(LOOP_SECONDS, 2) * 1000);
+}
+
+/* ------------------------------------
+   WebSocket: audience stream
+------------------------------------ */
+function broadcast(obj) {
+  const msg = JSON.stringify(obj);
+  wss.clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  });
+}
+
+wss.on('connection', (ws) => {
+  // send last state
+  ws.send(JSON.stringify({ type: 'hello', data: STATE.last }));
+  ws.on('message', async (raw) => {
+    try {
+      const { type, text } = JSON.parse(raw.toString());
+      if (type === 'audience_text') {
+        STATE.audienceText = (text || '').toString();
+        // option: pre-cache score to reduce latency
+        try { STATE.audienceScore = await getSentimentScore(STATE.audienceText); } catch(_) {}
+        broadcast({ type: 'audience_ack', data: { len: STATE.audienceText.length } });
+      }
+    } catch (e) {
+      ws.send(JSON.stringify({ type: 'error', error: e.message }));
+    }
+  });
+});
+
+/* ------------------------------------
+   REST: status + simple POST for audience
+------------------------------------ */
+app.get('/status', (req, res) => {
+  res.json({
+    mode: DATA_MODE,
+    loopSeconds: LOOP_SECONDS,
+    last: STATE.last,
+    audienceLen: STATE.audienceText.length
+  });
+});
+app.post('/audience', async (req, res) => {
+  STATE.audienceText = (req.body?.text || '').toString();
+  try { STATE.audienceScore = await getSentimentScore(STATE.audienceText); } catch(_) {}
+  res.json({ ok: true, len: STATE.audienceText.length });
+});
+
+/* ------------------------------------
+   Boot
+------------------------------------ */
+server.listen(PORT, () => {
+  console.log(`🚀 Realtime pipeline on http://localhost:${PORT} (mode=${DATA_MODE}, loop=${LOOP_SECONDS}s)`);
+  startLoop();
+});

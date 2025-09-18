@@ -1,0 +1,11 @@
+# Node
+node_modules/
+
+# Env & secrets
+.env
+
+# Outputs
+outputs/
+
+# Mac
+.DS_Store

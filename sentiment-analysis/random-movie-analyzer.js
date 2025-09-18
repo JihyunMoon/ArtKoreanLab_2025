@@ -1,9 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
-const RandomIMDBGenerator = require('./random-imdb-generator');
+const RandomIMDBGenerator = require('./src/random-imdb-generator');
 const { getMovieData } = require('./src/imdb-scraper');
-const { analyzeSentimentAndKeywords, generateImageFromKeywords } = require('./src/openai-utils');
+const { getProvider, getProviderName } = require('./src/ai-provider');
 
 /**
  * Streamlined Movie Review to OSC Sender
@@ -20,6 +20,9 @@ class MovieReviewStreamer {
         if (!fs.existsSync(this.outputDir)) fs.mkdirSync(this.outputDir, { recursive: true });
         if (!fs.existsSync(this.imageDir)) fs.mkdirSync(this.imageDir, { recursive: true });
         if (!fs.existsSync(this.dataDir)) fs.mkdirSync(this.dataDir, { recursive: true });
+        // AI provider
+        this.ai = getProvider();
+        this.aiName = getProviderName();
     }
 
     sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -56,7 +59,7 @@ class MovieReviewStreamer {
         return this.shuffleArray(allMovies);
     }
 
-    // Legacy OSC flow removed; focusing on OpenAI scoring and image generation
+    // Legacy OSC flow removed; focusing on provider-based scoring and image generation
 
     /**
      * Process and send a single review via OSC with immediate feedback
@@ -100,16 +103,16 @@ class MovieReviewStreamer {
             console.log(`   • Title: ${data.title}`);
             console.log(`   • Reviews found: ${data.reviews.length}`);
 
-            // Analyze each review via OpenAI
+            // Analyze each review via selected AI provider
             for (const [idx, review] of data.reviews.entries()) {
                 try {
-                    const analysis = await analyzeSentimentAndKeywords(review.text);
+                    const analysis = await this.ai.analyzeSentimentAndKeywords(review.text);
                     review.sentimentScore = analysis.sentimentScore;
                     review.sentimentCategory = analysis.sentimentCategory;
                     review.keywords = analysis.keywords;
                     console.log(`   ✅ Review ${idx + 1}: ${analysis.sentimentScore.toFixed(3)} (${analysis.sentimentCategory}) | keywords: ${analysis.keywords.join(', ')}`);
                 } catch (e) {
-                    console.warn(`   ⚠️  OpenAI analysis failed: ${e.message}`);
+                    console.warn(`   ⚠️  Analysis failed: ${e.message}`);
                     review.sentimentScore = 0;
                     review.sentimentCategory = 'neutral';
                     review.keywords = [];
@@ -121,16 +124,18 @@ class MovieReviewStreamer {
 
             // Generate image if any keywords
             let imagePath = null;
-            if (aggKeywords.length && process.env.OPENAI_API_KEY) {
+            if (aggKeywords.length) {
                 try {
                     const base = `${movieId}_${Date.now()}`;
-                    imagePath = await generateImageFromKeywords(aggKeywords, this.imageDir, base);
-                    console.log(`   Image saved: ${imagePath}`);
+                    imagePath = await this.ai.generateImageFromKeywords(aggKeywords, this.imageDir, base);
+                    if (imagePath) {
+                        console.log(`   Image saved: ${path.basename(imagePath)}`);
+                    }
                 } catch (e) {
                     console.warn(`   ⚠️  Image generation failed: ${e.message}`);
                 }
             } else {
-                console.log('   ℹ️  Skipping image generation (no keywords or API key)');
+                console.log('   ℹ️  Skipping image generation (no keywords)');
             }
 
             // Save JSON metadata
@@ -191,7 +196,7 @@ class MovieReviewStreamer {
                     // Analyze sentiment and keywords per review
                     let analysis = { sentimentScore: 0, sentimentCategory: 'neutral', keywords: [] };
                     try {
-                        analysis = await analyzeSentimentAndKeywords(review.text);
+                        analysis = await this.ai.analyzeSentimentAndKeywords(review.text);
                     } catch (e) {
                         console.warn(`   ⚠️  Analysis failed for review ${idx}: ${e.message}`);
                     }
@@ -207,16 +212,16 @@ class MovieReviewStreamer {
 
                     // Generate an image for this review using its keywords
                     let imagePath = null;
-                    if ((analysis.keywords || []).length > 0 && process.env.OPENAI_API_KEY) {
+                    if ((analysis.keywords || []).length > 0) {
                         try {
                             const base = `${titleSlug}_${movieId}_r${idx}_${Date.now()}`;
-                            imagePath = await generateImageFromKeywords(analysis.keywords, this.imageDir, base);
+                            imagePath = await this.ai.generateImageFromKeywords(analysis.keywords, this.imageDir, base);
                             console.log(`   🖼️  Review ${idx}: image saved -> ${path.basename(imagePath)}`);
                         } catch (e) {
                             console.warn(`   ⚠️  Image generation failed for review ${idx}: ${e.message}`);
                         }
                     } else {
-                        console.log(`   ℹ️  Review ${idx}: skipping image (no keywords or API key)`);
+                        console.log(`   ℹ️  Review ${idx}: skipping image (no keywords)`);
                     }
 
                     // Save per-review JSON
@@ -311,7 +316,8 @@ async function main() {
     const delayMs = parseInt(args[1]) || 3000; // for stream mode: first arg after 'stream'
 
     console.log('='.repeat(60));
-    console.log('🎥 MOVIE REVIEW ANALYZER (IMDB + OpenAI)');
+    const providerName = streamer.aiName.toUpperCase();
+    console.log(`🎥 MOVIE REVIEW ANALYZER (IMDB + ${providerName})`);
     console.log('='.repeat(60));
 
     try {

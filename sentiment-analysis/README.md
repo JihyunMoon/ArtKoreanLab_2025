@@ -1,126 +1,111 @@
-# Movie Review Sentiment Streaming with Node.js and OSC
+# Sentiment Analysis: IMDB Reviews + Gemini + ComfyUI
 
-This project provides a Node.js application that continuously streams movie reviews, performs sentiment analysis using OpenAI's API, and sends the results via OSC (Open Sound Control) for real-time audio/visual applications.
+Analyze random IMDB user reviews with Google AI (Gemini), extract sentiment and keywords, and optionally generate a cinematic image with ComfyUI — all saved into `outputs/`.
 
 ## Features
 
-- **Continuous Movie Review Streaming**: Automatically fetches random movie data and reviews
-- **Real-time Sentiment Analysis**: Uses OpenAI's API to analyze review sentiment (-1 to 1 scale)
-- **OSC Integration**: Sends sentiment data via OSC to localhost:57120 for SuperCollider, Max/MSP, etc.
-- **Configurable Parameters**: Adjustable delay between reviews, review count limits, and reviews per movie
+- Fetches titles and a few user reviews from IMDB for random/popular movies
+- Uses Gemini (`@google/generative-ai`) to return:
+  - `sentimentScore` in [-1, 1], `sentimentCategory` (negative/neutral/positive)
+  - `keywords` (3–7 concise tokens)
+  - Built-in keyword/sentiment fallbacks if the API is unavailable
+- Optional image generation via ComfyUI with a configurable workflow (`default.json`)
+- Saves JSON metadata under `outputs/data/` and images to `outputs/images/`
 
-## Setup
+## Prerequisites
 
-1. Install dependencies
+- Node.js 18+ recommended
+- A Google AI API key (for Gemini): set one of `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- (Optional) A running ComfyUI server for image generation
 
-   ```bash
-   npm install
-   ```
+## Install
 
-2. Set up environment variables
+```bash
+# from repo root
+cd sentiment-analysis
+npm install
+```
 
-   ```bash
-   cp .env.example .env
-   ```
+## Configuration
 
-   Then edit `.env` and add your OpenAI API key:
+Copy the example and edit as needed:
 
-   ```env
-   OPENAI_API_KEY=your_actual_api_key_here
-   ```
+```bash
+cp .env.example .env
+```
+Key variables from `.env.example`:
 
-3. Get an OpenAI API key
+- `AI_PROVIDER` (default `gemini`)
+- `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- `GEMINI_MODEL` (default `gemini-2.0-flash`)
+- Image generation via ComfyUI:
+  - `IMAGE_PROVIDER=comfyui`
+  - `COMFYUI_BASE_URL` (default `http://127.0.0.1:8188`)
+  - `COMFYUI_WORKFLOW_FILE` (defaults to repo `default.json` if omitted)
+  - Optional overrides: `COMFYUI_CKPT`, `COMFYUI_WIDTH`, `COMFYUI_HEIGHT`, `COMFYUI_STEPS`, `COMFYUI_CFG`, `COMFYUI_SAMPLER`, `COMFYUI_SCHEDULER`, `COMFYUI_NEGATIVE`, `COMFYUI_TIMEOUT`
 
-  Visit [OpenAI API Keys](https://platform.openai.com/api-keys) to create a new API key, then add it to your `.env` file.
+Notes:
+
+- If image generation is not desired, leave `IMAGE_PROVIDER` empty or unset. The app will skip image creation gracefully.
+- The ComfyUI workflow is expected to contain nodes like `KSampler`, `CheckpointLoaderSimple`, `EmptyLatentImage`, `CLIPTextEncode`, and `SaveImage`. The code injects your prompt, sizes, and other overrides.
 
 ## Usage
 
-### Start the Movie Review Stream
+The primary entry is `random-movie-analyzer.js`. Available npm scripts:
 
 ```bash
-# Start streaming with default settings (3-second delays, unlimited reviews)
-node random-movie-analyzer.js
+# Quick test: analyze a couple of popular movies (default)
+npm start
+# or
+npm run random
 
-# Custom settings - 5-second delays, max 10 reviews, 2 reviews per movie
-node random-movie-analyzer.js --delay 5000 --max 10 --reviews 2
+# Full run: more movies, mixed random/popular
+npm run random:full
+
+# Stream mode: continuous loop (Ctrl+C to stop)
+# Usage: npm run random:stream -- <delayMs> <reviewsPerMovie>
+# Example: every 3 seconds, 1 review per movie
+npm run random:stream -- 3000 1
 ```
 
-### Test OSC Functionality
+Direct Node usage is also supported:
 
 ```bash
-# Test OSC sending only
-node test-osc.js osc
+# quick mode (default if no args)
+node random-movie-analyzer.js quick
 
-# Test stream mode (5 reviews)
-node test-osc.js stream
+# full mode with optional overrides
+node random-movie-analyzer.js full 8 2  
+#            ^mode            ^movieCount ^reviewsPerMovie
 
-# Run all tests
-node test-osc.js all
+# stream mode: delayMs and optional reviewsPerMovie
+node random-movie-analyzer.js stream 3000 1
 ```
 
-### OSC Data Format
+## Output
 
-The application sends three OSC messages for each review:
+Generated files go to:
 
-- `/movie/title` - Movie title (string)
-- `/movie/review` - Review text content (string)  
-- `/movie/sentiment` - Sentiment score from -1 to 1 (float)
+- `outputs/data/*.json` — per-movie or per-review metadata
+- `outputs/images/*.png` — when ComfyUI is enabled and an image is produced
 
-### SuperCollider Integration Example
+Each JSON entry includes movie metadata, extracted sentiment and keywords, and the file path of any generated image.
 
-```supercollider
-// Receive movie review data in SuperCollider
-OSCdef(\movieTitle, {|msg| 
-    ("Movie: " ++ msg[1]).postln;
-}, "/movie/title");
+## How it works
 
-OSCdef(\movieReview, {|msg| 
-    ("Review: " ++ msg[1]).postln;
-}, "/movie/review");
+- `src/random-imdb-generator.js` — finds random IMDB titles (or uses a curated popular list)
+- `src/imdb-scraper.js` — scrapes the movie page and a handful of user reviews
+- `src/ai-provider.js` — selects the AI provider (currently Gemini)
+- `src/gemini-utils.js` — calls Gemini for structured analysis; has fallbacks for sentiment/keywords
+- `default.json` — a minimal ComfyUI workflow template that the app customizes per run
 
-OSCdef(\movieSentiment, {|msg| 
-    ("Sentiment: " ++ msg[1]).postln;
-    // Use sentiment value to control audio parameters
-    ~synth.set(\freq, msg[1].linexp(-1, 1, 200, 800));
-}, "/movie/sentiment");
-```
+## Troubleshooting
 
-## Command Line Options
-
-- `--delay <ms>` - Milliseconds between reviews (default: 3000)
-- `--max <number>` - Maximum number of reviews to process (default: unlimited)
-- `--reviews <number>` - Number of reviews per movie (default: 1)
-
-## Project Structure
-
-```text
-random-movie-analyzer.js   # Main streaming application
-test-osc.js               # OSC testing utilities
-src/
-  oscSender.js           # OSC client wrapper
-  openaiClient.js        # OpenAI API client
-  sentimentCore.js       # Sentiment analysis functions
-  scrapers.js            # IMDB scraping utilities
-  analyzers.js           # Review analysis logic
-  loaders.js             # Data loading utilities
-config.js                 # Configuration settings
-```
-
-## Dependencies
-
-- `node-osc`: OSC (Open Sound Control) messaging
-- `openai`: Official OpenAI Node.js library
-- `axios`: HTTP client for web scraping
-- `cheerio`: Server-side HTML parsing
-- `dotenv`: Environment variable management
-
-## Use Cases
-
-- Real-time audio-visual installations responding to movie sentiment
-- Live coding performances with sentiment-driven parameters
-- Interactive media art projects
-- Data sonification experiments
-- Educational demonstrations of sentiment analysis
+- Missing API key: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` in `.env`
+- Network / IMDB scraping changes: retry later or adjust selectors in `src/imdb-scraper.js`
+- ComfyUI timeouts: increase `COMFYUI_TIMEOUT` and ensure the server is reachable at `COMFYUI_BASE_URL`
+- No images generated: confirm `IMAGE_PROVIDER=comfyui` and that `COMFYUI_WORKFLOW_FILE` points to a valid workflow; check ComfyUI server logs
+- Rate limits / model errors: the code applies light fallbacks, but you may need to slow requests or handle keys with sufficient quota
 
 ## License
 
