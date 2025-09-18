@@ -1,0 +1,24 @@
+{
+  "name": "sentiment-analysis",
+  "version": "1.0.0",
+  "description": "Sentiment analysis using OpenAI API",
+  "main": "sentiment.js",
+  "scripts": {
+    "start": "node sentiment.js",
+    "run:config": "node run-with-config.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "openai": "^4.0.0",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12"
+  },
+  "keywords": [
+    "sentiment-analysis",
+    "openai",
+    "nlp"
+  ],
+  "author": "",
+  "license": "MIT"
+}
